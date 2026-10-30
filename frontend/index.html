@@ -38,7 +38,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const fmt=d=>d?String(d).slice(0,16).replace('T',' '):'—';
 function toast(m,bad){const t=$('toast');t.textContent=m;t.style.background=bad?'#b42318':'#176b3a';t.style.display='block';setTimeout(()=>t.style.display='none',4500)}
 async function api(path,method='GET',body){
- const API_BASE = 'https://YOUR-RENDER-BACKEND-URL';
+ const API_BASE = 'https://apollocare-backend.onrender.com';
 
 const r=await fetch(`${API_BASE}${path}`,{method,headers:{'Content-Type':'application/json',...(TOKEN?{Authorization:'Bearer '+TOKEN}:{})},body:body?JSON.stringify(body):undefined});
   const j=await r.json().catch(()=>({}));
