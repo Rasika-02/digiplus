@@ -1,0 +1,17 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16        # pgvector ready for the later RAG phase
+    environment: { POSTGRES_USER: apollo, POSTGRES_PASSWORD: apollo, POSTGRES_DB: apollocare }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U apollo -d apollocare"], interval: 5s, retries: 10 }
+  app:
+    build: .
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgresql+psycopg://apollo:apollo@db:5432/apollocare
+      JWT_SECRET: ${JWT_SECRET:-change-me-please-use-a-long-random-string}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LOG_FILE: /app/logs/app.log
+    volumes: [applogs:/app/logs]
+    ports: ["8000:8000"]
+volumes: { pgdata: {}, applogs: {} }

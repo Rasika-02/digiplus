@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ApolloCare Intelligence</title>
+<style>
+:root{--navy:#0b2447;--blue:#1d4ed8;--bg:#f3f6fb;--line:#d8e0ee}
+*{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:#1b2438}
+header{background:var(--navy);color:#fff;padding:12px 20px;display:flex;gap:16px;align-items:center}
+header h1{font-size:17px;margin:0;flex:1}header button{background:transparent;color:#fff;border:1px solid #fff5;padding:6px 12px;border-radius:6px;cursor:pointer}
+header button.on{background:var(--blue);border-color:var(--blue)}
+main{max-width:1150px;margin:18px auto;padding:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px}
+h2{margin:0 0 10px;font-size:15px;color:var(--navy)}table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);font-size:13px}tr.row{cursor:pointer}tr.row:hover{background:#eef3ff}
+input,select,textarea,button{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px}
+input,select,textarea{width:100%;margin:3px 0 8px}button{background:var(--blue);color:#fff;border:0;cursor:pointer;margin:2px 4px 2px 0}
+button.sec{background:#e6ecf8;color:var(--navy)}button.warn{background:#b42318}
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;background:#e6ecf8;font-size:12px}.tag.red{background:#fde3e0;color:#b42318}
+.tag.green{background:#dcf5e4;color:#176b3a}.muted{color:#667}.full{grid-column:1/-1}
+#toast{position:fixed;bottom:16px;right:16px;background:#222;color:#fff;padding:10px 14px;border-radius:8px;display:none;max-width:420px}
+.tl div{border-left:3px solid var(--blue);padding:2px 8px;margin:4px 0;font-size:13px}ul{margin:4px 0;padding-left:18px}
+</style></head><body>
+<header><h1>ApolloCare Intelligence <span class="muted" style="color:#9fb3d9;font-weight:400">· synthetic demo data</span></h1>
+<span id="who"></span><button id="tTasks" class="on" onclick="tab('tasks')">Tasks</button>
+<button id="tHand" onclick="tab('hand')">Work Handover Hub</button><button id="tMeet" onclick="tab('meet')">Meetings &amp; Decisions</button><button onclick="logout()">Sign out</button></header>
+<div id="toast"></div>
+<main id="login" class="full"><div class="card" style="max-width:340px;margin:60px auto;grid-column:1/-1">
+<h2>Sign in</h2><label>Username</label><input id="u" value="billing1"><label>Password</label>
+<input id="p" type="password" value="Demo@1234"><button onclick="login()">Sign in</button>
+<p class="muted">Demo users: admin, manager1, coord1, billing1, billing2, claims1, analyst1</p></div></main>
+<main id="app" style="display:none"></main>
+<script>
+let TOKEN=localStorage.getItem('tk'),ME=JSON.parse(localStorage.getItem('me')||'null'),USERS=[],VIEW='tasks',SEL=null;
+const CATS=["Billing","Insurance claim","Pre-authorization","Discharge","Patient documentation","Diagnostics","Administration","General operations"];
+const REASONS=["Employee leave","Shift change","Department transfer","Employee resignation","Work reassignment","Temporary absence","Other operational reasons"];
+const NEXT={OPEN:["ASSIGNED","IN_PROGRESS","CANCELLED"],ASSIGNED:["OPEN","IN_PROGRESS","BLOCKED","CANCELLED"],IN_PROGRESS:["BLOCKED","PENDING_APPROVAL","CANCELLED"],BLOCKED:["IN_PROGRESS","CANCELLED"],PENDING_APPROVAL:["IN_PROGRESS","CANCELLED"]};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=d=>d?String(d).slice(0,16).replace('T',' '):'—';
+function toast(m,bad){const t=$('toast');t.textContent=m;t.style.background=bad?'#b42318':'#176b3a';t.style.display='block';setTimeout(()=>t.style.display='none',4500)}
+async function api(path,method='GET',body){
+  const r=await fetch(path,{method,headers:{'Content-Type':'application/json',...(TOKEN?{Authorization:'Bearer '+TOKEN}:{})},body:body?JSON.stringify(body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){const d=j.detail;throw new Error((Array.isArray(d)?d.map(x=>x.loc.slice(-1)+': '+x.msg).join('; '):d)||r.statusText)}
+  return j}
+async function act(fn){try{await fn()}catch(e){toast(e.message,true)}}
+async function login(){await act(async()=>{const j=await api('/auth/login','POST',{username:$('u').value,password:$('p').value});
+  TOKEN=j.access_token;ME=j.user;localStorage.setItem('tk',TOKEN);localStorage.setItem('me',JSON.stringify(ME));await boot()})}
+function logout(){localStorage.clear();location.reload()}
+async function boot(){if(!TOKEN)return;await act(async()=>{USERS=await api('/users');$('login').style.display='none';$('app').style.display='grid';
+  $('who').textContent=ME.name+' · '+ME.role;await render()})}
+function tab(v){VIEW=v;SEL=null;[['tTasks','tasks'],['tHand','hand'],['tMeet','meet']].forEach(([i,n])=>$(i).className=v==n?'on':'');render()}
+const uopts=(sel)=>USERS.map(u=>`<option value="${u.id}" ${u.id==sel?'selected':''}>${esc(u.name)} (${u.role})</option>`).join('');
+const tagFor=s=>`<span class="tag ${s=='COMPLETED'?'green':s=='BLOCKED'?'red':''}">${s}</span>`;
+async function render(){await act(async()=>VIEW=='tasks'?await renderTasks():VIEW=='hand'?await renderHand():await renderMeet())}
+
+async function renderTasks(){
+  const [list,stats]=await Promise.all([api('/tasks?page_size=100'),api('/tasks/stats').catch(()=>null)]);
+  let h=`<div class="card"><h2>Tasks (${list.total})</h2>`;
+  if(stats)h+=`<p class="muted">Overdue: <b>${stats.overdue}</b> · ${Object.entries(stats.by_status).map(([k,v])=>k+': '+v).join(' · ')}${stats.avg_completion_hours!=null?' · avg completion '+stats.avg_completion_hours+'h':''}</p>`;
+  h+=`<table><tr><th>ID</th><th>Title</th><th>Owner</th><th>Status</th><th>Due</th></tr>`+list.items.map(t=>
+   `<tr class="row" onclick="openTask(${t.id})"><td>${t.ref}</td><td>${esc(t.title)}${t.pending_handover?` <span class="tag">in ${t.pending_handover}</span>`:''}</td><td>${esc(t.owner)}</td><td>${tagFor(t.status)}${t.overdue?' <span class="tag red">overdue</span>':''}</td><td>${fmt(t.due_date)}</td></tr>`).join('')+`</table></div>
+  <div class="card"><h2>Create task</h2><label>Title</label><input id="nt"><label>Description</label><textarea id="nd" rows="2"></textarea>
+  <label>Department</label><input id="ndep" value="${esc(ME.department||'Billing')}"><label>Category</label><select id="ncat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select>
+  <label>Priority</label><select id="npri"><option>low</option><option selected>medium</option><option>high</option><option>urgent</option></select>
+  <label>Assign to</label><select id="nown"><option value="">Unassigned</option>${uopts(ME.id)}</select>
+  <label>Due</label><input id="ndue" type="datetime-local"><label>Related claim (optional)</label><input id="nclm" placeholder="CLM-1024">
+  <button onclick="createTask()">Create task</button></div><div id="detail" class="card full" style="display:none"></div>`;
+  $('app').innerHTML=h;if(SEL)openTask(SEL)}
+function createTask(){act(async()=>{await api('/tasks','POST',{title:$('nt').value,description:$('nd').value,department:$('ndep').value,category:$('ncat').value,priority:$('npri').value,
+  owner_id:$('nown').value?+$('nown').value:null,due_date:$('ndue').value||null,related_claim_ref:$('nclm').value});toast('Task created');render()})}
+async function openTask(id){SEL=id;await act(async()=>{const t=await api('/tasks/'+id);const d=$('detail');d.style.display='block';
+  const nxt=(NEXT[t.status]||[]);
+  d.innerHTML=`<h2>${t.ref} · ${esc(t.title)} ${tagFor(t.status)}</h2><p>${esc(t.description)}</p>
+  <p class="muted">${esc(t.category)} · ${esc(t.department)} · priority ${t.priority} · owner <b>${esc(t.owner)}</b> · due ${fmt(t.due_date)}${t.carried_from_ref?` · carried from ${esc(t.carried_from_ref)} (orig. due ${fmt(t.original_due_date)})`:''}</p>
+  ${nxt.length?`<div><b>Move to:</b> <input id="scm" placeholder="reason / comment (required for Blocked, Cancelled)">${nxt.map(s=>`<button class="sec" onclick="setStatus(${t.id},'${s}')">${s}</button>`).join('')}</div>`:''}
+  ${['IN_PROGRESS','PENDING_APPROVAL'].includes(t.status)?`<div style="margin-top:8px"><b>Complete (outcome required)</b><input id="o1" placeholder="Resolution summary"><input id="o2" placeholder="Actions performed"><input id="o3" placeholder="Final result"><button onclick="complete(${t.id})">Complete task</button></div>`:''}
+  ${!['COMPLETED','CANCELLED'].includes(t.status)?`<div style="margin-top:8px"><b>Reassign</b><select id="ra">${uopts(t.owner_id)}</select><input id="rr" placeholder="Reason"><button class="sec" onclick="reassign(${t.id})">Reassign</button></div>`:''}
+  ${t.outcome?`<div class="card"><b>Outcome</b><br>${esc(t.outcome.resolution_summary)}<br>${esc(t.outcome.actions_performed)}<br>${esc(t.outcome.final_result)}<br><span class="muted">by ${esc(t.outcome.completed_by)} at ${fmt(t.outcome.completed_at)}</span></div>`:''}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:10px"><div><b>History (never deleted)</b><div class="tl">${t.history.map(x=>`<div><b>${x.event}</b> ${esc(x.from)}${x.to?' → '+esc(x.to):''} <span class="muted">${esc(x.by)} · ${fmt(x.at)}</span><br>${esc(x.comment)}</div>`).join('')}</div></div>
+  <div><b>Comments</b><div class="tl">${t.comments.map(c=>`<div><span class="tag ${c.kind=='blocker'?'red':''}">${c.kind}</span> ${esc(c.body)} <span class="muted">${esc(c.by)} · ${fmt(c.at)}</span></div>`).join('')||'<span class="muted">none</span>'}</div>
+  <select id="ck"><option>comment</option><option>progress</option><option>blocker</option><option>resolution</option></select><input id="cb" placeholder="Add a comment"><button onclick="comment(${t.id})">Add</button></div></div>`;
+  d.scrollIntoView({behavior:'smooth'})})}
+const setStatus=(id,s)=>act(async()=>{await api(`/tasks/${id}/status`,'POST',{status:s,comment:$('scm').value});toast('Status updated');await render()});
+const complete=id=>act(async()=>{await api(`/tasks/${id}/complete`,'POST',{resolution_summary:$('o1').value,actions_performed:$('o2').value,final_result:$('o3').value});toast('Completed');await render()});
+const reassign=id=>act(async()=>{await api(`/tasks/${id}/assign`,'POST',{owner_id:+$('ra').value,reason:$('rr').value});toast('Reassigned');await render()});
+const comment=id=>act(async()=>{await api(`/tasks/${id}/comments`,'POST',{body:$('cb').value,kind:$('ck').value});await render()});
+
+async function renderHand(){
+  const list=await api('/handovers');
+  let h=`<div class="card"><h2>Handovers</h2><table><tr><th>ID</th><th>Title</th><th>From → To</th><th>Status</th></tr>`+list.map(x=>
+   `<tr class="row" onclick="openHand(${x.id})"><td>${x.ref}</td><td>${esc(x.title)}</td><td>${esc(x.source)} → ${esc(x.receiver)}</td><td>${tagFor(x.status)}</td></tr>`).join('')+`</table></div>
+  <div class="card"><h2>Create handover</h2><label>Title</label><input id="ht"><label>Receiving employee</label><select id="hr">${uopts()}</select>
+  <label>Department</label><input id="hd" value="${esc(ME.department||'Billing')}"><label>Reason</label><select id="hre">${REASONS.map(r=>`<option>${r}</option>`).join('')}</select>
+  <label>Notes</label><textarea id="hn" rows="2"></textarea><label>Decisions made</label><textarea id="hdc" rows="2"></textarea><label>Pending issues</label><textarea id="hp" rows="2"></textarea>
+  <button onclick="createHand()">Create draft</button></div><div id="hdetail" class="card full" style="display:none"></div>`;
+  $('app').innerHTML=h;if(SEL)openHand(SEL)}
+const createHand=()=>act(async()=>{const x=await api('/handovers','POST',{title:$('ht').value,receiver_id:+$('hr').value,department:$('hd').value,reason:$('hre').value,notes:$('hn').value,decisions:$('hdc').value,pending_issues:$('hp').value});SEL=x.id;toast('Draft created');await render()});
+async function openHand(id){SEL=id;await act(async()=>{const x=await api('/handovers/'+id);const d=$('hdetail');d.style.display='block';
+  const el=x.status=='DRAFT'?await api(`/handovers/${id}/eligible-tasks`):[];const cs=await api(`/handovers/${id}/continuity`);
+  const mgr=['admin','manager'].includes(ME.role),isRecv=ME.id==x.receiver_id;
+  d.innerHTML=`<h2>${x.ref} · ${esc(x.title)} ${tagFor(x.status)} ${x.accepted?'<span class="tag green">accepted</span>':'<span class="tag red">not accepted yet</span>'}</h2>
+  <p class="muted">${esc(x.source)} → ${esc(x.receiver)} · ${esc(x.reason)} · ${esc(x.department)}</p>
+  <p><b>Notes:</b> ${esc(x.notes)||'—'}<br><b>Decisions:</b> ${esc(x.decisions)||'—'}<br><b>Pending issues:</b> ${esc(x.pending_issues)||'—'}</p>
+  ${contHtml(cs)}${x.status=='DRAFT'?`<div><b>Select open tasks to transfer</b>${el.map(t=>`<div><label><input type="checkbox" style="width:auto" class="pick" value="${t.id}"> ${t.ref} ${esc(t.title)} ${tagFor(t.status)}</label></div>`).join('')||'<p class="muted">No eligible open tasks for the source employee.</p>'}<button class="sec" onclick="pickTasks(${id})">Add selected tasks</button></div>`:''}
+  <p><b>Tasks in this handover</b></p><table><tr><th>Task</th><th>Previous owner</th><th>New owner</th><th>Result</th></tr>${x.tasks.map(t=>`<tr><td>${t.task_ref}</td><td>${esc(t.previous_owner)}</td><td>${esc(t.new_owner)||'—'}</td><td>${t.result}</td></tr>`).join('')}</table>
+  <div style="margin-top:8px">
+   ${x.status=='DRAFT'?`<button onclick="hact(${id},'submit')">Submit for review</button>`:''}
+   ${x.status=='PENDING_REVIEW'&&mgr?`<button onclick="hact(${id},'review')">Approve review</button>`:''}
+   ${x.status=='AWAITING_ACCEPTANCE'&&isRecv?`<input id="ack" placeholder="Acknowledgement comment"><button onclick="accept(${id})">Accept handover</button>`:''}
+   ${x.status=='ACCEPTED'?`<button class="sec" onclick="adv(${id},'IN_PROGRESS')">Mark In Progress</button>`:''}
+   ${['ACCEPTED','IN_PROGRESS'].includes(x.status)?`<button class="sec" onclick="adv(${id},'COMPLETED')">Mark Completed</button>`:''}
+   ${['DRAFT','PENDING_REVIEW','AWAITING_ACCEPTANCE'].includes(x.status)?`<button class="warn" onclick="hact(${id},'cancel',{comment:'Cancelled from UI'})">Cancel handover</button>`:''}
+   <button class="sec" onclick="brief(${id})">Generate AI brief</button></div>
+  <div id="brief">${x.brief?briefHtml(x.brief):''}</div>
+  <p><b>Timeline</b></p><div class="tl">${x.history.map(e=>`<div><b>${e.event}</b> ${esc(e.detail)} <span class="muted">${esc(e.by)} · ${fmt(e.at)}</span></div>`).join('')}</div>`;
+  d.scrollIntoView({behavior:'smooth'})})}
+const pickTasks=id=>act(async()=>{const ids=[...document.querySelectorAll('.pick:checked')].map(c=>+c.value);await api(`/handovers/${id}/tasks`,'POST',{task_ids:ids});toast('Tasks added');await render()});
+const hact=(id,a,b)=>act(async()=>{await api(`/handovers/${id}/${a}`,'POST',b);toast('Done');await render()});
+const accept=id=>act(async()=>{await api(`/handovers/${id}/accept`,'POST',{comment:$('ack').value});toast('Handover accepted: tasks transferred');await render()});
+const adv=(id,t)=>act(async()=>{await api(`/handovers/${id}/advance`,'POST',{target:t});await render()});
+const brief=id=>act(async()=>{const b=await api(`/handovers/${id}/brief`,'POST');$('brief').innerHTML=briefHtml(b)});
+function briefHtml(b){const L=(t,a)=>a&&a.length?`<b>${t}</b><ul>${a.map(i=>`<li>${esc(i)}</li>`).join('')}</ul>`:'';
+  return `<div class="card" style="margin-top:8px"><b>Handover brief</b> <span class="tag">${esc(b.generated_by)}</span><p>${esc(b.summary)}</p>${L('Needs immediate attention',b.needs_immediate_attention)}${L('Critical tasks',b.critical_tasks)}${L('Deadlines',b.deadlines)}${L('Decisions',b.decisions)}${L('Blockers',b.blockers)}${L('Recommended next steps',b.recommended_next_steps)}</div>`}
+function contHtml(c){const col=c.context_loss_risk=='Low'?'green':c.context_loss_risk=='High'?'red':'';
+  return `<div class="card" style="margin:8px 0"><b>Handover Continuity Score: ${c.score}/100</b> <span class="tag ${col}">${c.context_loss_risk} context-loss risk</span>
+  <div class="muted">Can the receiver continue without phoning the previous owner?</div>
+  ${c.gaps.length?`<b>To improve:</b><ul>${c.gaps.map(g=>`<li>${esc(g)}</li>`).join('')}</ul>`:'<p>All context checks passed.</p>'}</div>`}
+
+async function renderMeet(){
+  const list=await api('/meetings');window.MEETS=list;
+  $('app').innerHTML=`<div class="card"><h2>Meetings (${list.length})</h2><table><tr><th>ID</th><th>Title</th><th>Date</th><th>Status</th></tr>${list.map(m=>
+   `<tr class="row" onclick="openMeet(${m.id})"><td>${m.ref}</td><td>${esc(m.title)}</td><td>${fmt(m.meeting_date)}</td><td>${tagFor(m.status)}</td></tr>`).join('')}</table></div>
+  <div class="card"><h2>Create meeting</h2><label>Title</label><input id="mt"><label>Date &amp; time</label><input id="md" type="datetime-local">
+  <label>Department</label><input id="mdep" value="${esc(ME.department||'Billing')}"><label>Participants (Ctrl+click for several)</label><select id="mp" multiple size="5">${uopts()}</select>
+  <label>Previous meeting (optional)</label><select id="mprev"><option value="">None</option>${list.map(m=>`<option value="${m.id}">${m.ref} ${esc(m.title)}</option>`).join('')}</select>
+  <label>Agenda</label><textarea id="ma" rows="2"></textarea><label>Notes / pasted transcript</label><textarea id="mn" rows="5" placeholder="Decision: ...&#10;Action: Ravi Patil to call insurer by 2026-11-05"></textarea>
+  <button onclick="createMeet()">Create meeting</button></div><div id="mdetail" class="card full" style="display:none"></div>`;
+  if(SEL)openMeet(SEL)}
+const createMeet=()=>act(async()=>{const m=await api('/meetings','POST',{title:$('mt').value,meeting_date:$('md').value||null,department:$('mdep').value,
+  participant_ids:[...$('mp').selectedOptions].map(o=>+o.value),agenda:$('ma').value,notes:$('mn').value,previous_meeting_id:$('mprev').value?+$('mprev').value:null});
+  SEL=m.id;toast('Meeting created');await render()});
+async function openMeet(id){SEL=id;await act(async()=>{const m=await api('/meetings/'+id);const d=$('mdetail');d.style.display='block';
+  const others=(window.MEETS||[]).filter(x=>x.id!=id);
+  d.innerHTML=`<h2>${m.ref} · ${esc(m.title)} ${tagFor(m.status)}</h2><p class="muted">${fmt(m.meeting_date)} · ${esc(m.department)} · organizer ${esc(m.organizer)}${m.previous_meeting?` · follows ${m.previous_meeting}`:''}</p>
+  <p><b>Participants</b> (tick = attended):<br>${m.participants.map(p=>`<label style="margin-right:12px"><input type="checkbox" class="att" style="width:auto" value="${p.id}" ${p.attended?'checked':''} ${m.can_edit?'':'disabled'}> ${esc(p.name)}</label>`).join('')}
+  ${m.can_edit?`<button class="sec" onclick="saveAtt(${id})">Save attendance</button>`:''}</p>
+  <p><b>Agenda:</b> ${esc(m.agenda)||'—'}</p>
+  <b>Notes / transcript</b>${m.can_edit?`<textarea id="en" rows="5">${esc(m.notes)}</textarea><button class="sec" onclick="saveNotes(${id})">Save notes</button><button onclick="extract(${id})">Extract summary, decisions &amp; actions with AI</button>`:`<p>${esc(m.notes)||'—'}</p>`}
+  <div id="prop"></div>
+  <p><b>Decisions</b></p><ul>${m.decisions.map(x=>`<li>${esc(x.text)} <span class="muted">— ${esc(x.by)}${x.source?' (AI, approved)':''}</span></li>`).join('')||'<li class="muted">none recorded</li>'}</ul>
+  ${m.can_edit?`<input id="nd2" placeholder="Record a decision"><button class="sec" onclick="addDec(${id})">Add decision</button>`:''}
+  <p><b>Action items</b></p><table><tr><th>Task</th><th>Title</th><th>Owner</th><th>Status</th><th>Due</th><th></th></tr>${m.action_items.map(t=>
+   `<tr><td>${t.ref}</td><td>${esc(t.title)}</td><td>${esc(t.owner)}</td><td>${tagFor(t.status)}${t.overdue?' <span class="tag red">overdue</span>':''}</td><td>${fmt(t.due_date)}</td>
+   <td>${t.origin=='carried'?`<span class="tag">carried from ${esc(t.carried_from_ref)}</span>`:''}</td></tr>`).join('')}</table>
+  <div style="margin-top:8px"><input id="ai1" placeholder="New action item title" style="width:40%"> <select id="ai2" style="width:25%"><option value="">Unassigned</option>${uopts()}</select> <input id="ai3" type="date" style="width:20%"><button class="sec" onclick="addAI(${id})">Add action item</button></div>
+  ${m.can_edit&&others.length?`<div class="card" style="margin-top:8px"><b>Carry open items forward</b> (same tasks, history kept)<select id="cf1">${others.map(x=>`<option value="${x.id}">${x.ref} ${esc(x.title)}</option>`).join('')}</select>
+   <input id="cf2" placeholder="Reason (e.g. not discussed in time)"><input id="cf3" type="datetime-local"><button onclick="carryM(${id})">Carry forward</button></div>`:''}
+  <div style="margin-top:8px"><button class="sec" onclick="catchUp(${id})">Catch-up brief for me</button></div><div id="cu"></div>`;
+  d.scrollIntoView({behavior:'smooth'})})}
+const saveAtt=id=>act(async()=>{await api(`/meetings/${id}/attendance`,'POST',{attended_ids:[...document.querySelectorAll('.att:checked')].map(c=>+c.value)});toast('Attendance saved')});
+const saveNotes=id=>act(async()=>{await api('/meetings/'+id,'PUT',{notes:$('en').value});toast('Notes saved')});
+const addDec=id=>act(async()=>{await api(`/meetings/${id}/decisions`,'POST',{text:$('nd2').value});await openMeet(id)});
+const addAI=id=>act(async()=>{await api(`/meetings/${id}/action-items`,'POST',{title:$('ai1').value,owner_id:$('ai2').value?+$('ai2').value:null,due_date:$('ai3').value||null});await openMeet(id)});
+const carryM=id=>act(async()=>{const r=await api(`/meetings/${id}/carry-forward`,'POST',{to_meeting_id:+$('cf1').value,reason:$('cf2').value,review_date:$('cf3').value||null});
+  toast(`Carried ${r.carried.length} item(s)`+(r.skipped.length?`, skipped ${r.skipped.length}`:''));await openMeet(id)});
+async function extract(id){await act(async()=>{await api('/meetings/'+id,'PUT',{notes:$('en').value});const p=await api(`/meetings/${id}/extract`,'POST');window.PROP=p;
+  $('prop').innerHTML=`<div class="card" style="margin:8px 0"><b>AI proposal</b> <span class="tag">${esc(p.generated_by)}</span> <span class="muted">Nothing is saved until you approve.</span>
+  <p>${esc(p.summary)}</p>
+  <b>Decisions</b>${p.decisions.map((x,i)=>`<div><label><input type="checkbox" style="width:auto" class="pd" value="${i}" checked> ${esc(x)}</label></div>`).join('')||'<div class="muted">none found</div>'}
+  <b>Action items</b>${p.action_items.map((a,i)=>`<div style="display:flex;gap:6px;align-items:center"><input type="checkbox" style="width:auto" class="pa" value="${i}" checked>
+   <input id="pt${i}" value="${esc(a.title)}"><select id="po${i}"><option value="">Unassigned</option>${uopts(a.owner_id)}</select><input id="pdd${i}" type="date" value="${a.due_date||''}">
+   ${a.needs_confirmation?'<span class="tag red">confirm</span>':''}</div>`).join('')||'<div class="muted">none found</div>'}
+  ${p.unresolved.length?`<b>Unresolved</b><ul>${p.unresolved.map(u=>`<li>${esc(u)}</li>`).join('')}</ul>`:''}
+  <button onclick="approveX(${id})">Approve &amp; save selected</button></div>`})}
+const approveX=id=>act(async()=>{const p=window.PROP;const dec=[...document.querySelectorAll('.pd:checked')].map(c=>p.decisions[+c.value]);
+  const acts=[...document.querySelectorAll('.pa:checked')].map(c=>{const i=+c.value;return{title:$('pt'+i).value,owner_id:$('po'+i).value?+$('po'+i).value:null,due_date:$('pdd'+i).value||null}});
+  await api(`/meetings/${id}/approve`,'POST',{summary:p.summary,decisions:dec,action_items:acts});toast('Saved decisions and action items');await openMeet(id)});
+const catchUp=id=>act(async()=>{const b=await api(`/meetings/${id}/catch-up`);const L=(t,a)=>a&&a.length?`<b>${t}</b><ul>${a.map(i=>`<li>${esc(i)}</li>`).join('')}</ul>`:'';
+  $('cu').innerHTML=`<div class="card" style="margin-top:8px"><b>Catch-up brief</b> <span class="tag">${esc(b.generated_by)}</span>${b.you_attended===false?' <span class="tag red">you missed this meeting</span>':''}
+  <p>${esc(b.what_happened)}</p>${L('Needs immediate attention',b.needs_immediate_attention)}${L('Your items',b.your_items)}${L('Decisions',b.decisions)}${L('Changed / carried forward',b.changed)}${L('Pending items',b.pending_items)}</div>`});
+
+boot();
+</script></body></html>
