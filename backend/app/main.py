@@ -32,7 +32,16 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ApolloCare Intelligence API", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "https://digiplusapolo.netlify.app"
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 bearer = HTTPBearer(auto_error=False)
 
 
